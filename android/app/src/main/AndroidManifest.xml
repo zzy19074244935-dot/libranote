@@ -1,0 +1,105 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Internet access for API calls / downloads -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- File read/write for book downloads (Android 12 及以下) -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <!-- Android 13+ 导入本地书籍需要媒体读取权限 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- 请求加入电池优化白名单：国产 ROM（华为/小米/OV）会激进杀后台，
+         加白后切到桌面 App 不会被立刻杀掉。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 听书朗读：前台服务（退回桌面/熄屏继续读）+ 通知 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- 整屏截图（MediaProjection）：Android 10+ 必须在 mediaProjection 类型的
+         前台服务运行期间才能创建虚拟屏，Android 14+ 缺这条权限直接抛
+         SecurityException —— 分屏/浮窗里的 B 站截不进来的根因。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 自建版本更新：DownloadManager 下载 + 安装 APK。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Agent 任务后台执行：dataSync 类型前台服务（Android 14+ 强制要求类型） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- Android 11+ 必须声明 TTS 意图查询，否则 App 看不到系统语音引擎，
+         朗读点了没声音的根因之一。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <!-- Android 11+ 必须声明浏览器意图查询，否则 canLaunchUrl(https)
+             永远返回 false → 右上角「在浏览器打开」/ 硬核指南跳转失效。 -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <!-- 分屏打开哔哩哔哩：getLaunchIntentForPackage 需要包可见性声明。
+             手机版 + HD 版（平板常见装 HD 版）都要查。 -->
+        <package android:name="tv.danmaku.bili" />
+        <package android:name="tv.danmaku.bilibilihd" />
+    </queries>
+
+    <application
+        android:label="Libranote"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <!-- 朗读前台服务：通知栏常驻，退回桌面/熄屏后朗读继续。 -->
+        <service
+            android:name=".TtsPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+        <!-- 整屏截图前台服务：MediaProjection 创建虚拟屏期间必须在跑
+             （Android 10+ 强制要求，14+ 不满足直接 SecurityException）。 -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+        <!-- Agent 任务前台服务：任务后台执行 + 通知栏进度（点通知回任务页）。 -->
+        <service
+            android:name=".AgentTaskService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <!-- 分享/更新安装共用的 FileProvider（见 res/xml/file_paths.xml）。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+</manifest>

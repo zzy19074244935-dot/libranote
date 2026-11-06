@@ -1,0 +1,8 @@
+# 火山函数计算 Python 3.10 依赖清单
+# 打包方式：pip install -t ./deps -r requirements.txt 后连同 main.py、fonts/ 一起 zip
+flask==3.0.3
+flask-cors==4.0.0
+requests==2.32.3
+pillow==10.4.0
+volcengine==1.0.227
+tos==2.9.2

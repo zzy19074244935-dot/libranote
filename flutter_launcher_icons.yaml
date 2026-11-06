@@ -1,0 +1,8 @@
+flutter_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#EEEDEC"
+  adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
+  # 0.9.3 解析不了 Kotlin DSL 的 minSdk = flutter.minSdkVersion，这里显式给
+  min_sdk_android: 24

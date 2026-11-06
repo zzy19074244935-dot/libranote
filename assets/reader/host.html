@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Foliate Reader</title>
+<!-- 兼容 polyfill：epub.js 用了 ES2024 的 Object.groupBy / Map.groupBy
+     （Chrome 117+），老内核 WebView/WebView2 没有 → EPUB 打开报
+     "TypeError: Object.groupBy is not a function"。模块脚本是 deferred，
+     本 classic 脚本一定先执行。 -->
+<script src="polyfill.js"></script>
+<!-- PDF 引擎的裸模块导入解析（readest 用 vite alias，静态宿主用 importmap 等价实现） -->
+<script type="importmap">
+{
+  "imports": {
+    "@pdfjs/pdf.min.mjs": "./vendor/pdfjs/pdf.min.mjs",
+    "construct-style-sheets-polyfill": "./vendor/construct-style-sheets-polyfill.js"
+  }
+}
+</script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #ffffff;
+  }
+  foliate-view {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  /* 引擎默认白色纸面；主题色由 Flutter 通过 setStyles 注入 CSS 变量覆盖 */
+
+  /* ── 选择菜单（两行式：功能栏 + 高亮批注栏） ─────────────────────── */
+  #selection-menu {
+    position: fixed;
+    z-index: 9999;
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.18), 0 0 0 1px rgba(0,0,0,.08);
+    user-select: none;
+    -webkit-user-select: none;
+    /* 窄屏上 8 个功能按钮自动换行，不让菜单顶出屏幕 */
+    max-width: min(96vw, 560px);
+  }
+  #selection-menu.show { display: flex; }
+  #selection-menu .row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  #selection-menu .row.menu-sep {
+    margin-top: 2px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(0,0,0,.08);
+  }
+  #selection-menu .dot {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+  }
+  #selection-menu .dot.active { border-color: #333; }
+  #selection-menu .btn {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    border: 0;
+    background: none;
+    padding: 5px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #333;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #selection-menu .btn:hover { background: rgba(0,0,0,.06); }
+  #selection-menu .btn.active { background: rgba(0,0,0,.10); font-weight: 600; }
+  /* AI 按钮强调色：violet，与 AI 标注的标注点同色系 */
+  #selection-menu .btn.menu-ai-btn { color: #7c3aed; font-weight: 600; }
+
+  /* ── 图片画廊（readest ImageViewer 页内实现） ─────────────────────── */
+  #image-gallery {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: none;
+    flex-direction: column;
+    background: rgba(0,0,0,.94);
+  }
+  #image-gallery.show { display: flex; }
+  #image-gallery .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    color: #fff;
+    font-size: 13px;
+  }
+  #image-gallery .bar button {
+    background: rgba(255,255,255,.14);
+    color: #fff;
+    border: 0;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  #image-gallery .stage {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  #image-gallery img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+</style>
+</head>
+<body>
+<foliate-view id="view"></foliate-view>
+<div id="selection-menu">
+  <!-- 第一行：功能栏（复制/搜索/翻译/朗读/批注/AI/分享） -->
+  <div class="row">
+    <button class="btn" id="menu-copy">⧉ 复制</button>
+    <button class="btn" id="menu-search">🔍 搜索</button>
+    <button class="btn" id="menu-dict">📖 翻译</button>
+    <button class="btn" id="menu-tts">🔊 朗读</button>
+    <button class="btn" id="menu-note">✏ 批注</button>
+    <button class="btn menu-ai-btn" id="menu-ai">🤖 AI</button>
+    <button class="btn" id="menu-share">↗ 分享</button>
+  </div>
+  <!-- 第二行：高亮批注栏（样式三态 + 颜色圆点） -->
+  <div class="row">
+    <button class="btn active" id="style-highlight">高亮</button>
+    <button class="btn" id="style-underline">下划线</button>
+    <button class="btn" id="style-squiggly">波浪线</button>
+  </div>
+  <div class="row">
+    <div class="dot" style="background:#f87171" data-color="#f87171"></div>
+    <div class="dot" style="background:#facc15" data-color="#facc15"></div>
+    <div class="dot" style="background:#4ade80" data-color="#4ade80"></div>
+    <div class="dot" style="background:#60a5fa" data-color="#60a5fa"></div>
+    <div class="dot" style="background:#a78bfa" data-color="#a78bfa"></div>
+  </div>
+</div>
+<script type="module">
+import { View } from './view.js'
+import { Overlayer } from './overlayer.js'
+if (!customElements.get('foliate-view')) {
+  customElements.define('foliate-view', View)
+}
+const view = document.getElementById('view')
+
+// ── 事件 → Flutter（flutter_inappwebview 的 JS handler） ──────────────
+function emit(name, payload) {
+  try {
+    if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+      window.flutter_inappwebview.callHandler('foliateEvent', {
+        name,
+        payload: payload === undefined ? null : payload,
+      })
+    }
+  } catch (e) {
+    console.error('[foliate] emit failed', e)
+  }
+}
+
+// readest 批注样式默认色（DEFAULT_READSETTINGS.highlightStyles）：
+// 高亮=黄、下划线=绿、波浪线=蓝。
+const STYLE_DEFAULT_COLOR = { highlight: '#facc15', underline: '#4ade80', squiggly: '#60a5fa' }
+
+// ── 批注持久队列（修「退出后 / 笔记中心跳回后高亮消失」） ─────────────
+// 引擎的 addAnnotation 只会渲染「当前已加载」章节：书刚打开（book-ready 后
+// 分页还没出来）或 goTo 的目标章节尚未加载完成时注入，会被静默丢弃。而
+// 批注真实数据在 Flutter 侧 SQLite，恢复必须由 Flutter 灌回来。这里把全部
+// 批注存进 pending 队列，每次章节加载完成（create-overlay，此时该页的
+// overlayer 已挂上）就按 CFI 解析出章节号、把属于该章节的批注重新注入
+// （addAnnotation 内部先 remove 再 add，幂等）。CFI → 章节号解析结果缓存，
+// 失败不缓存，等下一次事件重试。
+const pendingAnnotations = new Map() // value(CFI) -> annotation payload
+const resolvedIndexCache = new Map() // value -> section index
+
+async function applyPendingToSection(index) {
+  if (index == null) return
+  for (const [value, payload] of pendingAnnotations) {
+    let idx = resolvedIndexCache.get(value)
+    if (idx === undefined) {
+      try {
+        const resolved = view.resolveNavigation(value)
+        idx = resolved?.index
+        if (idx == null) continue // 解析失败：下次事件再试
+        resolvedIndexCache.set(value, idx)
+      } catch (err) {
+        console.error('[foliate] resolve annotation failed', err)
+        continue
+      }
+    }
+    if (idx === index) {
+      try {
+        await view.addAnnotation(payload)
+      } catch (err) {
+        console.error('[foliate] reapply annotation failed', err)
+      }
+    }
+  }
+}
+
+view.addEventListener('create-overlay', e => {
+  applyPendingToSection(e.detail?.index)
+})
+
+function bindEvents() {
+  const renderer = view.renderer
+  if (!renderer) return
+  // ⚠️ relocate 必须挂在 view 上：renderer 的 relocate 只有
+  // {reason,range,index,fraction,size}（无 cfi/location），view 会把它包成
+  // 完整结构（fraction/section/location/time/tocItem/pageItem/cfi）再重发。
+  // 挂错对象 = 页码/进度/书签/当前章节全部拿不到（用户反馈的根因）。
+  view.addEventListener('relocate', (e) => {
+    const d = e.detail || {}
+    if (d.cfi) window.__lastCfi = d.cfi
+    // 完整透传：location 是 readest 的"页码"（每 1500 字符一页），
+    // section 是章节号，time 是剩余分钟。
+    emit('relocate', {
+      cfi: d.cfi ?? '',
+      fraction: d.fraction ?? 0,
+      index: d.index ?? 0,
+      section: d.section ?? null,
+      location: d.location ?? null,
+      time: d.time ?? null,
+      tocItem: d.tocItem ?? null,
+      pageItem: d.pageItem ?? null,
+      range: d.range ? String(d.range) : '',
+      // PDF（fixed-layout）的真实页码：foliate-fxl 的 page/pages。
+      page: view.isFixedLayout ? (view.renderer?.page ?? null) : null,
+      pages: view.isFixedLayout ? (view.renderer?.pages ?? null) : null,
+    })
+  })
+  renderer.addEventListener('load', () => emit('load', {}))
+  renderer.addEventListener('stabilized', () => emit('stabilized', {}))
+  renderer.addEventListener('navigate-start', () => emit('navigate-start', {}))
+  renderer.addEventListener('navigate-end', () => emit('navigate-end', {}))
+
+  // ── 高亮/笔记渲染与事件 ───────────────────────────────────────────
+  // 引擎本身不带菜单；draw-annotation 需要我们调用 draw() 才真正渲染。
+  view.addEventListener('draw-annotation', (e) => {
+    const { draw, annotation } = e.detail || {}
+    const color = annotation?.color || STYLE_DEFAULT_COLOR[annotation?.style] || '#facc15'
+    const style = annotation?.style || 'highlight'
+    if (draw) {
+      if (style === 'underline') draw(Overlayer.underline, { color })
+      else if (style === 'squiggly') draw(Overlayer.squiggly, { color })
+      else draw(Overlayer.highlight, { color })
+    }
+    emit('annotation-created', {
+      value: annotation?.value ?? '',
+      text: annotation?.text ?? '',
+      note: annotation?.note ?? '',
+      color,
+      style,
+    })
+  })
+  view.addEventListener('show-annotation', (e) => {
+    const d = e.detail || {}
+    emit('annotation-tapped', { value: d.value ?? '', range: d.range ? String(d.range) : '' })
+  })
+
+  // ── 链接：脚注等内部跳转通知 Flutter（引擎仍执行默认跳页） ─────────
+  view.addEventListener('link', (e) => {
+    const d = e.detail || {}
+    const href = d.href ?? ''
+    if (href.startsWith('#')) {
+      emit('footnote-link', { href, text: d.text ?? '' })
+    } else {
+      emit('external-link', { href })
+    }
+  })
+
+  // ── 图片点击 → 页内画廊 ───────────────────────────────────────────
+  const gallery = document.getElementById('image-gallery')
+  const galleryImg = document.getElementById('gallery-img')
+  const galleryCount = document.getElementById('gallery-count')
+  let galleryImages = []
+  let galleryIndex = 0
+  function closeGallery() {
+    gallery.classList.remove('show')
+    galleryImages = []
+  }
+  function showGallery(src) {
+    // 收集当前节全部图片（readest collectDocumentImages 简化版）。
+    const contents = view.renderer?.getContents?.() ?? []
+    galleryImages = []
+    for (const { doc } of contents) {
+      for (const img of doc?.querySelectorAll?.('img') ?? []) {
+        if (img.src) galleryImages.push(img.src)
+      }
+    }
+    if (!galleryImages.length) return
+    galleryIndex = Math.max(0, galleryImages.indexOf(src))
+    renderGallery()
+    gallery.classList.add('show')
+  }
+  function renderGallery() {
+    galleryImg.src = galleryImages[galleryIndex]
+    galleryCount.textContent = `${galleryIndex + 1} / ${galleryImages.length}`
+  }
+  document.getElementById('gallery-close').addEventListener('click', closeGallery)
+  document.getElementById('gallery-prev').addEventListener('click', () => {
+    if (galleryIndex > 0) { galleryIndex--; renderGallery() }
+  })
+  document.getElementById('gallery-next').addEventListener('click', () => {
+    if (galleryIndex < galleryImages.length - 1) { galleryIndex++; renderGallery() }
+  })
+  document.addEventListener('click', (ev) => {
+    const t = ev.target
+    if (t && t.tagName === 'IMG' && !gallery.contains(t)) {
+      showGallery(t.src)
+    }
+  })
+
+  // ── 选择菜单（readest 风格高亮菜单） ──────────────────────────────
+  const menu = document.getElementById('selection-menu')
+  let selectionState = null // { index, range, cfi, text }
+  let currentStyle = 'highlight'
+  let currentColor = null // null = 跟随样式默认色
+
+  function currentSelection() {
+    const contents = view.renderer?.getContents?.() ?? []
+    for (const { doc, index } of contents) {
+      if (!doc?.defaultView) continue
+      const sel = doc.defaultView.getSelection()
+      if (!sel || sel.isCollapsed || !sel.rangeCount) continue
+      const range = sel.getRangeAt(0)
+      if (!range || range.collapsed) continue
+      const text = sel.toString().trim()
+      if (!text) continue
+      return { doc, index, range, text }
+    }
+    return null
+  }
+
+  function currentSectionIndex() {
+    return view.renderer?.primaryIndex ?? 0
+  }
+
+  function hideMenu() {
+    menu.classList.remove('show')
+    selectionState = null
+  }
+
+  function showMenu() {
+    const sel = currentSelection()
+    if (!sel) { hideMenu(); return }
+    const rect = sel.range.getBoundingClientRect()
+    if (!rect || (rect.width === 0 && rect.height === 0)) { hideMenu(); return }
+    const cfi = view.getCFI(sel.index, sel.range)
+    selectionState = { ...sel, cfi }
+    const x = Math.min(Math.max(rect.left + rect.width / 2 - menu.offsetWidth / 2, 8), window.innerWidth - menu.offsetWidth - 8)
+    const y = rect.top - menu.offsetHeight - 10
+    menu.style.left = x + 'px'
+    menu.style.top = (y > 8 ? y : rect.bottom + 10) + 'px'
+    menu.classList.add('show')
+  }
+
+  document.addEventListener('mouseup', () => setTimeout(showMenu, 50))
+  document.addEventListener('touchend', () => setTimeout(showMenu, 400))
+  document.addEventListener('mousedown', (e) => {
+    if (!menu.contains(e.target)) hideMenu()
+  })
+  document.addEventListener('touchstart', (e) => {
+    if (!menu.contains(e.target)) hideMenu()
+  })
+  window.addEventListener('scroll', hideMenu)
+
+  function applySelection(style, extra) {
+    if (!selectionState) return
+    const { index, range, cfi, text } = selectionState
+    // 走 __foliate.addAnnotation：除渲染外还把批注登记进 pending 队列，
+    // 翻页/重排后仍能随章节加载恢复（与库中恢复同一条路径）。
+    window.__foliate.addAnnotation({ value: cfi, text, color: currentColor || undefined, style, ...extra })
+    view.deselect?.()
+    hideMenu()
+  }
+
+  // 样式三态按钮。
+  const styleBtns = [
+    ['style-highlight', 'highlight'],
+    ['style-underline', 'underline'],
+    ['style-squiggly', 'squiggly'],
+  ]
+  for (const [id, style] of styleBtns) {
+    document.getElementById(id).addEventListener('click', () => {
+      currentStyle = style
+      for (const [bid] of styleBtns) {
+        document.getElementById(bid).classList.toggle('active', bid === id)
+      }
+      applySelection(style)
+    })
+  }
+
+  menu.querySelectorAll('.dot').forEach((dot) => {
+    dot.addEventListener('click', () => {
+      if (!selectionState) return
+      currentColor = dot.dataset.color
+      menu.querySelectorAll('.dot').forEach((d) =>
+        d.classList.toggle('active', d === dot))
+      applySelection(currentStyle)
+    })
+  })
+  // 功能栏动作 → Flutter。payload 带 text + cfi + rect：
+  // Flutter 端 AI/截图/分享/复制缓存都需要锚点信息。
+  function emitSelectionAction(name, opts = {}) {
+    if (!selectionState) return
+    const rect = selectionState.range.getBoundingClientRect()
+    emit('selection-action', {
+      name,
+      text: selectionState.text,
+      cfi: selectionState.cfi,
+      index: selectionState.index,
+      rect: rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null,
+      ...opts,
+    })
+  }
+
+  document.getElementById('menu-note').addEventListener('click', () => {
+    if (!selectionState) return
+    const { cfi, text } = selectionState
+    const note = prompt('笔记内容', '')
+    if (note === null) { hideMenu(); return }
+    applySelection(currentStyle, { note })
+  })
+  document.getElementById('menu-copy').addEventListener('click', () => {
+    if (!selectionState) return
+    navigator.clipboard?.writeText(selectionState.text).catch(() => {})
+    // 复制也把原文/锚点报给 Flutter 缓存：之后在同一选区做批注/AI 时
+    // 记录里一定带原文（方案 §2.8：复制后原文与笔记一并保存）。
+    emitSelectionAction('copy')
+    view.deselect?.()
+    hideMenu()
+  })
+  document.getElementById('menu-ai').addEventListener('click', () => {
+    if (!selectionState) return
+    emitSelectionAction('ai')
+    view.deselect?.()
+    hideMenu()
+  })
+  document.getElementById('menu-share').addEventListener('click', () => {
+    if (!selectionState) return
+    emitSelectionAction('share')
+    view.deselect?.()
+    hideMenu()
+  })
+  // 朗读/翻译/搜索 → Flutter（复用同一条事件）。
+  for (const [id, name] of [
+    ['menu-tts', 'tts'],
+    ['menu-dict', 'dict'],
+    ['menu-search', 'search'],
+  ]) {
+    document.getElementById(id).addEventListener('click', () => {
+      if (!selectionState) return
+      emitSelectionAction(name)
+      view.deselect?.()
+      hideMenu()
+    })
+  }
+}
+
+window.__lastCfi = ''
+
+// ── Flutter 可调用的精简 API ─────────────────────────────────────────
+window.__foliate = {
+  /** 打开书：url 形如 x-book://main，由 Flutter 端 shouldInterceptRequest 回传字节 */
+  async open(url) {
+    try {
+      await view.open(url)
+      bindEvents()
+      const meta = view.book?.metadata ?? {}
+      emit('book-ready', {
+        title: meta.title ?? '',
+        author: meta.author ?? '',
+        language: meta.language ?? '',
+        format: view.book?.format ?? '',
+        fixedLayout: !!view.isFixedLayout,
+      })
+      return { ok: true }
+    } catch (e) {
+      console.error('[foliate] open failed', e)
+      emit('error', { message: String(e) })
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  /** 恢复进度（CFI）或从头开始 */
+  async restore(cfi) {
+    try {
+      if (cfi) {
+        await view.goTo(cfi)
+      } else {
+        view.goToFraction(0)
+      }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  /** 注入阅读样式 CSS（字号/行距/页边距/主题色由 Flutter 端生成） */
+  applyStyles(css) {
+    try {
+      view.renderer?.setStyles?.(css)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  /** 渲染器属性（animated / max-inline-size / max-block-size / gap 等） */
+  setAttr(name, value) {
+    try {
+      view.renderer?.setAttribute(name, value)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  /** 批量布局属性：{flow, gap, 'max-column-count', dir, zoom, 'scale-factor', spread,
+   *  'scroll-direction', 'scroll-gap'}；null/'' 表示移除。 */
+  setLayout(attrs) {
+    try {
+      const r = view.renderer
+      for (const [k, v] of Object.entries(attrs ?? {})) {
+        if (v == null || v === '') r.removeAttribute(k)
+        else r.setAttribute(k, v)
+      }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  /** PDF：把主题应用到纸面（readest applyThemeToPDF → pageColors）。 */
+  setPageColors(apply, bg, fg) {
+    try {
+      if (view.renderer?.pageColors !== undefined) {
+        view.renderer.pageColors = apply ? { background: bg, foreground: fg } : undefined
+      } else if (apply) {
+        view.renderer?.setAttribute('background', bg)
+      }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  async next() {
+    view.renderer?.next()
+    return { ok: true }
+  },
+
+  async prev() {
+    view.renderer?.prev()
+    return { ok: true }
+  },
+
+  /** 上一章 / 下一章（引擎原生） */
+  async nextSection() {
+    view.renderer?.nextSection?.()
+    return { ok: true }
+  },
+  async prevSection() {
+    view.renderer?.prevSection?.()
+    return { ok: true }
+  },
+
+  /** 历史返回（脚注跳转后回原位） */
+  async historyBack() {
+    try {
+      view.history?.back?.()
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  async goTo(cfi) {
+    try {
+      await view.goTo(cfi)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  async goToFraction(f) {
+    try {
+      view.goToFraction(f)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  /** 目录（含子级） */
+  toc() {
+    const flat = (items, depth) => {
+      const out = []
+      for (const t of items ?? []) {
+        out.push({ label: t.label ?? '', href: t.href ?? '', depth })
+        if (t.subitems?.length) out.push(...flat(t.subitems, depth + 1))
+      }
+      return out
+    }
+    return flat(view.book?.toc ?? [], 0)
+  },
+
+  /** 全文搜索（readest 选项：mode=contains|whole-words|regex，matchCase 等） */
+  async search(query, opts) {
+    try {
+      const results = []
+      const o = opts || {}
+      for await (const r of view.search({ query, ...o })) {
+        if (typeof r === 'string') continue // 'done'
+        if (r.progress != null && !r.subitems) continue // 进度信号
+        if (r.subitems) {
+          // 章节级结果：label = 目录章节名（可能为空），index = 章节序号。
+          // sectionLabel 兜底从 book.sections[index].label 取章节标题，
+          // 保证「哪一章」信息永远拿得到。
+          const sectionLabel =
+            r.label ??
+            view.book?.sections?.[r.index]?.label ??
+            view.book?.sections?.[r.index]?.tocLabel ??
+            ''
+          for (const item of r.subitems) {
+            results.push({
+              cfi: item.cfi ?? '',
+              excerpt: (item.excerpt ?? '').slice(0, 200),
+              label: sectionLabel,
+              index: r.index ?? -1,
+            })
+            if (results.length >= 200) break
+          }
+        } else if (r.cfi) {
+          results.push({ cfi: r.cfi, excerpt: (r.excerpt ?? '').slice(0, 200), index: -1 })
+        }
+        if (results.length >= 200) break
+      }
+      return { ok: true, results, sections: view.book?.sections?.length ?? 0 }
+    } catch (e) {
+      return { ok: false, error: String(e), results: [], sections: 0 }
+    }
+  },
+
+  clearSearch() {
+    try {
+      view.clearSearch()
+    } catch (e) { /* noop */ }
+  },
+
+  /** 高亮/笔记注入：{ cfi, text, color, style: 'highlight'|'underline'|'squiggly', note } */
+  async addAnnotation(payload) {
+    try {
+      const label = await view.addAnnotation(payload)
+      const value = payload?.value
+      if (value) {
+        pendingAnnotations.set(value, payload)
+        // 不删 resolvedIndexCache：同一本书里 CFI → 章节号映射是稳定的。
+      }
+      return { ok: true, label: String(label) }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  /** 恢复全部批注（Flutter 端 book-ready 后把库中批注一次性灌进来）。
+   *  已加载的章节立即尝试渲染；未加载的等各自 create-overlay 时自动注入。 */
+  setAnnotations(list) {
+    pendingAnnotations.clear()
+    resolvedIndexCache.clear()
+    for (const item of list ?? []) {
+      if (item?.value) pendingAnnotations.set(item.value, item)
+    }
+    const applied = new Set()
+    for (const { index } of view.renderer?.getContents?.() ?? []) {
+      if (index != null && !applied.has(index)) {
+        applied.add(index)
+        applyPendingToSection(index)
+      }
+    }
+    return { ok: true, count: pendingAnnotations.size }
+  },
+
+  async deleteAnnotation(label) {
+    try {
+      // 引擎契约：deleteAnnotation(annotation) 内部做 {value} 解构，
+      // 传字符串会抛 TypeError（undefined.startsWith）——必须包成对象。
+      const annotation = typeof label === 'string' ? { value: label } : label
+      await view.deleteAnnotation(annotation)
+      const value = typeof label === 'string' ? label : label?.value
+      if (value) {
+        pendingAnnotations.delete(value)
+        resolvedIndexCache.delete(value)
+      }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e) }
+    }
+  },
+
+  /** 选中文段 → 拿到 CFI（供「从这里朗读 / 做笔记」使用） */
+  selection() {
+    try {
+      const sel = view.getSelection?.()
+      return sel ?? null
+    } catch (e) {
+      return null
+    }
+  },
+
+  /** 当前阅读位置（最近一次 relocate 的 CFI） */
+  currentCfi() {
+    return window.__lastCfi ?? ''
+  },
+
+  /** 当前章节纯文本（供 Flutter 端原生 TTS 朗读）。
+   *  真机修复：改走 **JS → Flutter 事件通道**（选词朗读同一条通道，真机
+   *  验证可用），不再依赖 evaluateJavascript 回传 Promise 结果（个别设备
+   *  WebView 上回传不可靠——「没有可朗读的文本」的根因）。
+   *  内容 = 当前章节全部页的正文按阅读顺序拼接（分页把一章切成多页，
+   *  只取一页会漏掉章节其余内容）；分页渐进加载时最多 6 次 × 400ms 重试。 */
+  async getSectionText() {
+    const wait = ms => new Promise(r => setTimeout(r, ms))
+    const pick = () => {
+      const contents = view.renderer?.getContents?.() ?? []
+      // 分页器用 primaryIndex（章节号）；fixed-layout 用 page（页码）。
+      const primary = view.renderer?.primaryIndex ?? view.renderer?.page ?? null
+      const parts = []
+      const seen = new Set()
+      for (const { doc, index } of contents) {
+        if (primary != null && index !== primary) continue // 跳过预载的相邻章节
+        if (!doc?.body || seen.has(doc)) continue
+        seen.add(doc)
+        const t = doc.body.innerText?.trim?.()
+        if (t) parts.push(t)
+      }
+      return parts.join('\n\n')
+    }
+    let text = ''
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        text = pick()
+        if (text.length >= 10) break
+      } catch (e) {
+        console.error('[foliate] getSectionText failed', e)
+      }
+      await wait(400)
+    }
+    const index = view.renderer?.primaryIndex ?? view.renderer?.page ?? 0
+    emit('section-text', { text, index, label: '', ok: text.length > 0 })
+    return { text, index, label: '' }
+  },
+
+  /** 当前节所有图片（画廊数据源） */
+  sectionImages() {
+    try {
+      const contents = view.renderer?.getContents?.() ?? []
+      const out = []
+      for (const { doc, index } of contents) {
+        for (const img of doc?.querySelectorAll?.('img') ?? []) {
+          if (img.src) out.push({ src: img.src, alt: img.alt ?? '' })
+        }
+      }
+      return out
+    } catch (e) {
+      return []
+    }
+  },
+
+  /** 章节刻度（粘性进度条用，预留） */
+  sectionFractions() {
+    try {
+      return view.getSectionFractions?.() ?? []
+    } catch (e) {
+      return []
+    }
+  },
+}
+
+// 就绪信号
+emit('shell-ready', {})
+</script>
+  <!-- 图片画廊（页内，点击正文图片弹出） -->
+  <div id="image-gallery">
+    <div class="bar">
+      <span id="gallery-count"></span>
+      <div>
+        <button id="gallery-prev">‹ 上一张</button>
+        <button id="gallery-next">下一张 ›</button>
+        <button id="gallery-close">✕ 关闭</button>
+      </div>
+    </div>
+    <div class="stage"><img id="gallery-img" alt=""></div>
+  </div>
+</body>
+</html>

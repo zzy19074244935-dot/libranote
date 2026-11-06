@@ -1,0 +1,142 @@
+name: libranote
+description: A local-first Android and Windows reading and note-taking application.
+publish_to: 'none'
+version: 1.1.0+5
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+
+  # Networking
+  dio: ^5.4.3+1
+  dio_cookie_manager: ^3.1.1
+  cookie_jar: ^4.0.8
+
+  # Local storage
+  sqflite: ^2.3.3+1
+  # sqflite ships no Windows/Linux plugin — desktop needs the FFI backend, or
+  # every openDatabase() call throws MissingPluginException. See
+  # StorageService._initDb / main.dart for the databaseFactory wiring.
+  # Pinned below 2.4.0 deliberately: 2.4.x pulls sqlite3 >=3.0.0, whose build
+  # hook downloads a prebuilt sqlite3.dll from github.com at compile time —
+  # unreachable from here, so the Windows build fails outright. The 2.3.7 line
+  # uses sqlite3 ^2.9.4, which loads the sqlite3.dll bundled in the package.
+  sqflite_common_ffi: 2.3.7+1
+  path_provider: ^2.1.3
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  flutter_secure_storage: ^9.2.2
+
+  # HTML parsing (for search results parsing if needed)
+  html: ^0.15.4
+
+  # EPUB / PDF reading
+  # flutter_html: ^3.0.0-beta.2  # Uncomment if using HTML-based EPUB rendering
+
+  # File handling
+  permission_handler: ^11.3.1
+  open_file: ^3.3.2
+  file_picker: ^8.0.3
+  archive: ^3.6.1
+
+  # UI
+  cached_network_image: ^3.3.1
+  shimmer: ^3.0.0
+  flutter_slidable: ^3.1.0
+
+  # WebView for download extraction
+  flutter_inappwebview: ^6.1.5
+
+  # PDF / EPUB reading
+  pdfrx: ^2.4.5
+  # epub_view stays for its EPUB cover extraction only. It is NOT used to
+  # render books: it builds its content from the NCX table of contents, so any
+  # chapter the publisher left out of the NCX is unreachable (the 三体全集 test
+  # file has 62 spine documents and 4 navPoints). lib/services/epub_loader.dart
+  # walks the spine instead.
+  epub_view: ^3.2.0
+  # Direct deps of the spine-based reader — already in the tree via epub_view.
+  flutter_html: ^3.0.0
+  scrollable_positioned_list: ^0.3.8
+  xml: ^6.5.0
+
+  # Share / export
+  share_plus: ^10.1.4
+
+  # Preferences
+  shared_preferences: ^2.2.3
+
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.4.0
+  url_launcher: ^6.2.6
+  path: ^1.9.0
+  fast_gbk: ^1.0.0
+  flutter_downloader: ^1.12.0
+  file_saver: ^0.4.0
+  pdf: ^3.8.4
+  # 编辑版 PDF/DOCX 导出的页面合成（RGBA→JPEG）与图片尺寸解析。
+  # 钉 3.3.0（与 pdf/pdfrx 的依赖一致；.pubcache_backup 里有同版本补丁）。
+  image: 3.3.0
+  flutter_tts: ^4.2.5
+  google_mlkit_text_recognition: ^0.16.0
+  image_picker: ^1.2.3
+
+  # 单词卡片朗读（播放 TOS 下载到本地的 mp3）
+  audioplayers: ^6.1.0
+  markdown_widget: ^2.3.2+8
+
+  # 坚果云 WebDAV 云同步（Phase 5）。
+  # 钉 1.2.2（Phase 0 dry-run 定稿）：pub.dev 原版，纯 Dart，API 齐全
+  # （newClient/ping/mkdirAll/readDir/remove/writeFromFile/read2File），
+  # 不引 anx 的 git fork。
+  webdav_client: 1.2.2
+  # AI 工具「计算器」的本地表达式求值（Phase 6）。
+  math_expressions: 2.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  # 测试里 fake PathProviderPlatform 需要（随 path_provider 传递引入）。
+  plugin_platform_interface: ^2.1.8
+  path_provider_platform_interface: ^2.1.2
+  flutter_lints: ^4.0.0
+  riverpod_generator: ^2.4.0
+  build_runner: ^2.4.9
+  riverpod_lint: ^2.3.10
+  # 应用图标生成（python tool/make_icon.py 产出源图）
+  # 钉在 0.9.x：0.14+ 与 epub_view 3.2.0（epubx 4.0）依赖冲突
+  # 配置在 flutter_launcher_icons.yaml（0.9.x 只读这个文件，不读 pubspec）
+  flutter_launcher_icons: ^0.9.3
+
+# Explicit source patches replace undocumented modifications to the Pub cache.
+dependency_overrides:
+  image:
+    path: third_party/image-3.3.0
+  pdfrx_engine:
+    path: third_party/pdfrx_engine-0.4.4
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/
+    - assets/demo/
+    # 中文字体（Noto Sans SC，OFL）：仅用于 PDF 导出时内嵌，运行时子集化到输出 PDF，
+    # 输出文件很小，但源字体需打包进 App（约 10MB）。
+    - assets/fonts/
+    - third_party/licenses/
+    # foliate-js 阅读引擎（readest 同款，EPUB 分页渲染跑在 WebView 里）。
+    - assets/reader/
+    - assets/reader/ui/
+    - assets/reader/vendor/
+    - assets/reader/vendor/pdfjs/
+    - assets/reader/vendor/pdfjs/cmaps/
+    - assets/reader/vendor/pdfjs/standard_fonts/

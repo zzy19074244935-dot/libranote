@@ -1,0 +1,88 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Android release signing (never share)
+android/key.properties
+android/*.jks
+
+# Local secrets and user data (also apply to future source exports)
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+**/key.properties
+**/local.properties
+**/zlib-账号信息.txt
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.WebView2/
+
+# Distribution files, downloaded dependencies and local investigation outputs
+/apk_dist/
+/.pubcache_backup/
+**/node_modules/
+**/dist/
+**/__pycache__/
+/tool/anx_reader_ref/
+/tool/_*.html
+/tool/test_out.pdf
+/tool/e2e/test-book.epub
+/*build_log*.txt
+/shot_test*.txt
+
+# These rules do not remove files already present in Git history.
+
+/ios/Flutter/Generated.xcconfig
+/ios/Flutter/flutter_export_environment.sh
+/third_party/**/.dart_tool/
